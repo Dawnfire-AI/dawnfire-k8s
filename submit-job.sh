@@ -15,7 +15,9 @@ DEFAULT_GPUS=8
 # Override with KUBE_CONTEXT=... if you really mean to.
 KUBE_CONTEXT="${KUBE_CONTEXT:-training}"
 NAMESPACE="${NAMESPACE:-training}"
-QUEUE="${QUEUE:-gpu}"
+# "default" is never evicted. QUEUE=preemptible makes the job evictable: it then runs only
+# on GPUs nobody else wants and is suspended whenever a normal job needs them.
+QUEUE="${QUEUE:-default}"
 # The job stops by itself after this many hours of running, so a forgotten session cannot
 # hold its GPUs forever. Time spent queued does not count.
 MAX_HOURS="${MAX_HOURS:-8}"
