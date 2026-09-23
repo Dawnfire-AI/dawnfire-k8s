@@ -1,13 +1,15 @@
 # A batch training job: runs your script under torchrun on every node and stops when it
 # exits. Change metadata.name, numNodes and command, then:
 #
-#   kubectl --context training apply -f examples/trainjob.yaml
-#   kubectl --context training get trainjob
-#   kubectl --context training logs -f -l jobset.sigs.k8s.io/jobset-name=yourname-train
-#   kubectl --context training delete trainjob yourname-train
+#   kubectl apply -f examples/trainjob.yaml
+#   kubectl get trainjob
+#   kubectl logs -f -l jobset.sigs.k8s.io/jobset-name=yourname-train
+#   kubectl delete trainjob yourname-train
 apiVersion: trainer.kubeflow.org/v1alpha1
 kind: TrainJob
 metadata:
+  # Must start with your username (email before @, lowercased, dots as -), or the
+  # cluster rejects the job.
   name: yourname-train
   namespace: training
 spec:

@@ -26,13 +26,14 @@ the Google Workspace group `train-k8s-user`, so that is where membership is chan
 change can take a little while to reach the cluster.
 
 Install the tools and add the cluster to your normal kubeconfig. The script writes a
-`training` context into `~/.kube/config` next to whatever you already have; nothing
-existing is changed, and nothing in it is a secret.
+`training` context into `~/.kube/config` next to whatever you already have and makes it
+your default context, so every `kubectl` command below talks to this cluster. Your other
+contexts are not changed, and nothing in it is a secret.
 
 ```sh
 brew install kubectl kubelogin
 ./setup-kubeconfig.sh
-kubectl --context training auth whoami
+kubectl auth whoami
 ```
 
 The last command opens **sso.dawnfire.ai** in your browser; after you log in it finishes
@@ -41,9 +42,8 @@ on its own. You should see your email as `oidc:you@dawnfire.ai`, with
 without seeing the browser again. On a machine with no browser, run
 `DEVICE_CODE=1 ./setup-kubeconfig.sh` instead and open the printed link on any device.
 
-Every command below names `--context training` explicitly, so it can never land on some
-other cluster by accident. `kubectl config use-context training` makes it the default if
-you would rather drop the flag.
+If you switch to another cluster later, `kubectl config use-context training` switches
+back. `submit-job.sh` always targets `training`, whatever your current context is.
 
 ## 2. Start a GPU session
 
@@ -53,18 +53,23 @@ renting a box you then ssh into. `submit-job.sh` creates one:
 ```sh
 ./submit-job.sh <name> <nodes> [gpus-per-node] [image]
 
-./submit-job.sh yourname-dev 1 1     # 1 node, 1 GPU
-./submit-job.sh yourname-dev 1       # 1 node, all 8 GPUs
-./submit-job.sh yourname-run 2       # 2 nodes, 16 GPUs
+./submit-job.sh dev 1 1     # 1 node, 1 GPU
+./submit-job.sh dev 1       # 1 node, all 8 GPUs
+./submit-job.sh run 2       # 2 nodes, 16 GPUs
 ```
 
-**Put your name in the job name.** CPU and memory are sized to the GPU count for you
+Every job name on the cluster starts with **your username**: the part of your email
+before `@`, lowercased, with dots turned into `-` (`alice.chen@dawnfire.ai` is
+`alice-chen`). The script adds it for you, so `dev` becomes `yourname-dev`, and prints the
+exact names to use afterwards. Below, `yourname` stands for yours.
+
+CPU and memory are sized to the GPU count for you
 (22 CPU and 300Gi per GPU). The default image is `nvcr.io/nvidia/pytorch:26.08-py3`, with
 CUDA, NCCL, Python and torch; pass another as the fourth argument. `/data`, a 128Gi
 `/dev/shm` and InfiniBand are always set up.
 
 ```sh
-kubectl --context training get pods -w
+kubectl get pods -w
 ```
 
 If no pod appears straight away, you are **queued** behind someone else's GPUs. That is
@@ -79,7 +84,7 @@ count). For longer, `MAX_HOURS=24 ./submit-job.sh ...`.
 Once the pods show `Running`:
 
 ```sh
-kubectl --context training exec -it yourname-dev-master-0 -- bash
+kubectl exec -it yourname-dev-master-0 -- bash
 ```
 
 Inside, check you got the cards:
@@ -99,8 +104,8 @@ With 2 or more nodes the pods are `<name>-master-0`, `<name>-worker-0`,
 of them:
 
 ```sh
-kubectl --context training exec -it yourname-run-master-0 -- bash
-kubectl --context training exec -it yourname-run-worker-0 -- bash
+kubectl exec -it yourname-run-master-0 -- bash
+kubectl exec -it yourname-run-worker-0 -- bash
 
 # on every pod:
 torchrun --nnodes=$K8S_WORLD_SIZE --node_rank=$K8S_RANK --nproc_per_node=8 \
@@ -129,7 +134,7 @@ mkdir -p /data/$USER
 For small transfers from your laptop:
 
 ```sh
-kubectl --context training cp ./notes.txt yourname-dev-master-0:/data/yourname/
+kubectl cp ./notes.txt yourname-dev-master-0:/data/yourname/
 ```
 
 ## 6. Watch the queue
@@ -141,15 +146,17 @@ and how much of the 32-GPU quota is in use. It shows job names, not who submitte
 From the terminal, with the submitter of each job:
 
 ```sh
-kubectl --context training get workloads -L dawnfire.ai/owner   # everything queued or running
-kubectl --context training describe workload                     # why yours is still waiting
+kubectl get workloads -L dawnfire.ai/owner   # everything queued or running
+kubectl describe workload                     # why yours is still waiting
 ```
 
 ## 7. Batch training jobs
 
 When your script is ready to run unattended, submit it as a `TrainJob`. It runs your
 command under `torchrun` on every node and stops when the script exits. Copy
-`examples/trainjob.yaml`, change the name, node count and command:
+`examples/trainjob.yaml`, change the name, node count and command. Here you write the
+name yourself, and it must start with `yourname-` too; the cluster rejects anything else
+and says which prefix it wants.
 
 ```yaml
 apiVersion: trainer.kubeflow.org/v1alpha1
@@ -169,9 +176,9 @@ spec:
 ```
 
 ```sh
-kubectl --context training apply -f my-train.yaml
-kubectl --context training get trainjob
-kubectl --context training logs -f -l jobset.sigs.k8s.io/jobset-name=yourname-train
+kubectl apply -f my-train.yaml
+kubectl get trainjob
+kubectl logs -f -l jobset.sigs.k8s.io/jobset-name=yourname-train
 ```
 
 Your script receives the usual `RANK`, `LOCAL_RANK`, `WORLD_SIZE` and `MASTER_ADDR` from
@@ -184,15 +191,14 @@ runtime: starting torchrun yourself inside it would launch twice.
 firmly as a busy one, and nobody else can use them meanwhile.
 
 ```sh
-kubectl --context training delete pytorchjob yourname-dev     # a session from submit-job.sh
-kubectl --context training delete trainjob yourname-train     # a batch job
+kubectl delete pytorchjob yourname-dev     # a session from submit-job.sh
+kubectl delete trainjob yourname-train     # a batch job
 ```
 
 Sessions stop by themselves after 8 hours as a safety net. Do not rely on it.
 
 ## House rules
 
-- Put your name in every job name.
 - Ask for the GPUs you will actually use. Eight idle GPUs is a quarter of the cluster.
 - One session at a time unless you have said otherwise in the team channel.
 - Delete sessions you are done with.
@@ -203,8 +209,9 @@ Sessions stop by themselves after 8 hours as a safety net. Do not rely on it.
 | What you see | What it means |
 |---|---|
 | No pod, or the job shows as suspended | You are queued. It starts when enough GPUs are free. `describe workload` says what it is waiting for. |
+| `job names in this namespace must start with "yourname-"` | The job's name lacks your username prefix. Rename it as the message suggests. |
 | Pod stuck in `ContainerCreating` for a few minutes | First image download on that node. Wait. |
-| `Forbidden` on everything | Your login does not carry **Train K8s Users**. Check with `kubectl --context training auth whoami`. If the group is missing, ask an admin to add you to `train-k8s-user` in Google Workspace, then run `kubectl oidc-login clean` and any command to log in again. |
+| `Forbidden` on everything | Your login does not carry **Train K8s Users**. Check with `kubectl auth whoami`. If the group is missing, ask an admin to add you to `train-k8s-user` in Google Workspace, then run `kubectl oidc-login clean` and any command to log in again. |
 | The browser never opens, or you are on a machine without one | Re-run `DEVICE_CODE=1 ./setup-kubeconfig.sh`. You will get a link and code to open on any device. |
 | NCCL falls back to sockets, or InfiniBand errors | The pod is missing `rdma/shared_ib: 1` or the `IPC_LOCK` capability. `submit-job.sh` and `torch-shared` set both. |
 | DataLoader workers killed | The pod has no large `/dev/shm`. Use `submit-job.sh` or the `torch-shared` runtime, which both provide one. |

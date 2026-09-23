@@ -23,7 +23,8 @@ MAX_HOURS="${MAX_HOURS:-8}"
 usage() {
   cat <<USAGE
 Usage: $0 <job-name> <total-nodes> [gpus-per-node] [image]
-  job-name        Name for the PyTorchJob
+  job-name        Name for the PyTorchJob; your username is prefixed if missing
+                  (dev -> alice-dev)
   total-nodes     Total nodes, master + workers (minimum 1)
   gpus-per-node   GPUs per node (default: ${DEFAULT_GPUS}, max 8)
   image           Container image (default: ${DEFAULT_IMAGE})
@@ -49,6 +50,27 @@ IMAGE="${4:-$DEFAULT_IMAGE}"
 [[ "$TOTAL_NODES" =~ ^[0-9]+$ ]] && [[ "$TOTAL_NODES" -ge 1 ]] || { echo "Error: total-nodes must be an integer >= 1"; exit 1; }
 [[ "$GPUS" =~ ^[0-9]+$ ]] && [[ "$GPUS" -ge 1 ]] && [[ "$GPUS" -le 8 ]] || { echo "Error: gpus-per-node must be 1-8"; exit 1; }
 [[ "$MAX_HOURS" =~ ^[0-9]+$ ]] && [[ "$MAX_HOURS" -ge 1 ]] || { echo "Error: MAX_HOURS must be an integer >= 1"; exit 1; }
+
+# The cluster only accepts job names starting with "<owner>-", so the prefix is added here.
+# The owner is derived exactly as the cluster's admission policy derives it
+# (owner-labels.tf in the infra repo, change both together): the local part of the SSO
+# email, lowercased, with . _ + : / turned into -. The static admin key is a
+# system:serviceaccount user, which the policy exempts, so it gets no prefix.
+WHOAMI=$(kubectl --context "${KUBE_CONTEXT}" auth whoami -o jsonpath='{.status.userInfo.username}') \
+  || { echo "Error: could not log in to context ${KUBE_CONTEXT}"; exit 1; }
+OWNER=""
+if [[ "$WHOAMI" != system:* ]]; then
+  USERNAME="${WHOAMI#oidc:}"
+  OWNER=$(printf '%s' "${USERNAME%%@*}" | tr '[:upper:]' '[:lower:]' | tr '._+:/' '-----')
+fi
+if [[ -n "$OWNER" && "$JOB_NAME" != "${OWNER}-"* ]]; then
+  JOB_NAME="${OWNER}-${JOB_NAME}"
+fi
+
+# The name ends up in Service names like <name>-worker-12, which must be DNS labels of at
+# most 63 characters.
+[[ "$JOB_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] && [[ ${#JOB_NAME} -le 50 ]] \
+  || { echo "Error: job name '${JOB_NAME}' must be lowercase letters, digits and '-', at most 50 characters"; exit 1; }
 
 WORKER_REPLICAS=$((TOTAL_NODES - 1))
 
