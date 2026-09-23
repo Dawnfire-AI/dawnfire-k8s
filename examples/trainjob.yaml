@@ -1,0 +1,30 @@
+# A batch training job: runs your script under torchrun on every node and stops when it
+# exits. Change metadata.name, numNodes and command, then:
+#
+#   kubectl --context training apply -f examples/trainjob.yaml
+#   kubectl --context training get trainjob
+#   kubectl --context training logs -f -l jobset.sigs.k8s.io/jobset-name=yourname-train
+#   kubectl --context training delete trainjob yourname-train
+apiVersion: trainer.kubeflow.org/v1alpha1
+kind: TrainJob
+metadata:
+  name: yourname-train
+  namespace: training
+spec:
+  runtimeRef:
+    # Mounts /data and a 128Gi /dev/shm. Do not use torch-distributed: it has neither.
+    name: torch-shared
+  trainer:
+    # One pod per node, 8 GPUs each. 2 nodes = 16 GPUs, half the cluster.
+    numNodes: 2
+    resourcesPerNode:
+      requests: &res
+        cpu: "176"
+        memory: 2400Gi
+        nvidia.com/gpu: 8
+        # InfiniBand. One slot gives the pod every IB port on its node.
+        rdma/shared_ib: 1
+      limits: *res
+    # Runs UNDER torchrun, which sets RANK, LOCAL_RANK, WORLD_SIZE and MASTER_ADDR for
+    # your script. Write plain "python", never "torchrun": that would launch twice.
+    command: ["python", "/data/yourname/my-project/train.py"]
